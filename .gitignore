@@ -1,0 +1,45 @@
+# PowerShell project .gitignore
+# Ignore environment variable files
+.env
+.env.*
+
+# Ignore PowerShell data and cache files
+*.ps1xml
+*.psd1
+*.psm1
+*.pssc
+*.psrc
+*.pshistory
+*.pssession
+*.psworkspace
+*.pscache
+*.ps1~
+*.ps1.bak
+*.bak
+*.tmp
+*.log
+
+# Ignore output from PowerShell scripts
+*.out
+*.err
+*.stderr
+*.stdout
+*.log
+
+# Ignore test results
+TestResults/
+*.trx
+*.coverage
+
+# Ignore local settings
+*.user
+*.suo
+*.vspscc
+*.vssscc
+
+# Ignore system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+__MACOSX/
