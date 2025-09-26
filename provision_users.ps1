@@ -12,10 +12,16 @@
 .PARAMETER CsvFilePath
     The path to the CSV file containing user provisioning data.
     Expected columns: Repo, User, Role, Team
-    Note: User column should contain GitHub usernames, not email addresses.
+    Note: User column should contain GitHub usernames by default, or EMU email addresses when InputType is set to 'EMUEmail'.
 .PARAMETER DryRun
     When specified, performs a dry run without making actual changes to GitHub teams.
     Useful for validating the CSV data and checking what changes would be made.
+.PARAMETER InputType
+    Specifies how to interpret the User column in the CSV file.
+    'Username' (default): Treats the User column as GitHub usernames.
+    'EMUEmail': Treats the User column as GitHub Enterprise Managed Users (EMU) email addresses.
+    When 'EMUEmail' is used, the script requires a user_mapping.csv file in the users directory
+    with columns 'username' and 'useremail' for email-to-username mapping.
 .EXAMPLE
     ./provision_users.ps1 -CsvFilePath './users/User_Provisioning.csv'
 
@@ -27,6 +33,10 @@
 
     This command performs a dry run, showing what changes would be made without actually
     modifying the GitHub teams.
+.EXAMPLE
+    ./provision_users.ps1 -CsvFilePath './users/User_Provisioning.csv' -InputType EMUEmail
+
+    This command treats the User column as EMU email addresses instead of usernames.
 #>
 [CmdletBinding()]
 param(
@@ -34,7 +44,11 @@ param(
     [string]$CsvFilePath,
 
     [Parameter(Mandatory = $false)]
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Username', 'EMUEmail')]
+    [string]$InputType = 'Username'
 )
 
 # --- Configuration & Prerequisites ---
@@ -101,6 +115,26 @@ function Test-GitHubUser {
             return $null
         }
         Write-Error "Error checking user '$Username': $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Test-GitHubUserByEmail {
+    param([string]$Email)
+
+    $headers = Get-GitHubHeaders
+    # Use the search API to find users by email
+    $url = "$GITHUB_API_URL/search/users?q=$Email+in:email"
+
+    try {
+        $result = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        if ($result.total_count -gt 0) {
+            return $result.items[0]  # Return the first matching user
+        }
+        return $null
+    }
+    catch {
+        Write-Error "Error searching for user by email '$Email': $($_.Exception.Message)"
         return $null
     }
 }
@@ -225,6 +259,97 @@ function Convert-RoleToPermission {
     }
 }
 
+function Get-UserMappingData {
+    param([string]$CsvFilePath)
+
+    # Construct path to user_mapping.csv in the users directory
+    $usersDir = Split-Path -Path $CsvFilePath -Parent
+    $mappingFile = Join-Path -Path $usersDir -ChildPath "user_mapping.csv"
+
+    if (-not (Test-Path $mappingFile)) {
+        throw "User mapping file not found: $mappingFile. This file is required when InputType is 'EMUEmail'."
+    }
+
+    try {
+        $mappingData = Import-Csv -Path $mappingFile
+
+        # Validate required columns exist
+        $firstRow = $mappingData | Select-Object -First 1
+        if (-not $firstRow.PSObject.Properties.Name -contains 'username') {
+            throw "User mapping file '$mappingFile' is missing required 'username' column."
+        }
+        if (-not $firstRow.PSObject.Properties.Name -contains 'useremail') {
+            throw "User mapping file '$mappingFile' is missing required 'useremail' column."
+        }
+
+        Write-Host "Loaded user mapping file: $mappingFile ($($mappingData.Count) entries)"
+        return $mappingData
+    }
+    catch {
+        throw "Error reading user mapping file '$mappingFile': $($_.Exception.Message)"
+    }
+}
+
+function Get-UsernameFromMapping {
+    param(
+        [string]$Email,
+        [array]$MappingData
+    )
+
+    # Case-insensitive email lookup
+    $matchingEntry = $MappingData | Where-Object { $_.useremail -ieq $Email }
+
+    if ($matchingEntry) {
+        return $matchingEntry.username
+    }
+    else {
+        return $null
+    }
+}
+
+function Get-GitHubUser {
+    param(
+        [string]$UserInput,
+        [string]$InputType,
+        [array]$UserMappingData = $null
+    )
+
+    if ($InputType -eq 'EMUEmail') {
+        # First, try to resolve email to username using mapping file
+        if ($UserMappingData) {
+            $mappedUsername = Get-UsernameFromMapping -Email $UserInput -MappingData $UserMappingData
+            if ($mappedUsername) {
+                Write-Verbose "Mapped email '$UserInput' to username '$mappedUsername' via user_mapping.csv"
+                $user = Test-GitHubUser -Username $mappedUsername
+                if (-not $user) {
+                    Write-Warning "Mapped username '$mappedUsername' (from email '$UserInput') not found on GitHub. Skipping..."
+                }
+                return $user
+            }
+            else {
+                Write-Warning "Email '$UserInput' not found in user_mapping.csv. Skipping..."
+                return $null
+            }
+        }
+        else {
+            Write-Verbose "Looking up user by email: $UserInput"
+            $user = Test-GitHubUserByEmail -Email $UserInput
+            if (-not $user) {
+                Write-Warning "User with email '$UserInput' not found on GitHub. Skipping..."
+            }
+            return $user
+        }
+    }
+    else {
+        Write-Verbose "Looking up user by username: $UserInput"
+        $user = Test-GitHubUser -Username $UserInput
+        if (-not $user) {
+            Write-Warning "Username '$UserInput' not found on GitHub. Skipping..."
+        }
+        return $user
+    }
+}
+
 function Test-GitHubRepository {
     param(
         [string]$OrgName,
@@ -296,6 +421,18 @@ if ($DryRun) {
     Write-Host "DRY RUN MODE: No changes will be made to GitHub teams." -ForegroundColor Yellow
 }
 
+# Load user mapping data if using EMUEmail input type
+$userMappingData = $null
+if ($InputType -eq 'EMUEmail') {
+    try {
+        $userMappingData = Get-UserMappingData -CsvFilePath $CsvFilePath
+    }
+    catch {
+        Write-Error $_.Exception.Message
+        exit 1
+    }
+}
+
 # Read and process CSV file
 Write-Host "Reading CSV file: $CsvFilePath"
 try {
@@ -315,7 +452,7 @@ $directAccessCount = 0
 
 # Process each entry in CSV
 foreach ($entry in $csvData) {
-    $username = $entry.User
+    $userInput = $entry.User
     $teamName = $entry.Team
     $roleName = $entry.Role
     $repoName = $entry.Repo
@@ -327,22 +464,31 @@ foreach ($entry in $csvData) {
 
     # Skip entries that have neither team nor role assignment
     if (-not $hasTeam -and -not $hasRole) {
-        Write-Warning "Skipping user '$username' - no team or role specified"
+        Write-Warning "Skipping user input '$userInput' - no team or role specified"
         continue
     }
 
-    # Validate user exists on GitHub
-    $user = Test-GitHubUser -Username $username
+    # Validate user exists and get user info
+    Write-Host "Validating user '$userInput'..."
+    $user = Get-GitHubUser -UserInput $userInput -InputType $InputType -UserMappingData $userMappingData
     if (-not $user) {
-        Write-Warning "User '$username' not found on GitHub. Skipping..."
         $failureCount++
         continue
+    }
+
+    # Use the actual GitHub username for API calls (from the user object)
+    $username = $user.login
+    Write-Verbose "Resolved to GitHub username: $username"
+
+    # Show input resolution if using EMU emails
+    if ($InputType -eq 'EMUEmail' -and $userInput -ne $username) {
+        Write-Verbose "Resolved EMU email '$userInput' to username '$username'"
     }
 
     # Check if user is a member of the organization (optional - they might be added as outside collaborator)
     $isOrgMember = Test-UserInOrganization -OrgName $GITHUB_ORG -Username $username
     if (-not $isOrgMember -and $hasTeam) {
-        Write-Warning "User '$username' is not a member of organization '$GITHUB_ORG'. They need to be invited to the organization before being added to teams."
+        Write-Warning "User '$username' (from input '$userInput') is not a member of organization '$GITHUB_ORG'. They need to be invited to the organization before being added to teams."
         $failureCount++
         continue
     }

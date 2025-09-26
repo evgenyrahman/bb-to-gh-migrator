@@ -6,13 +6,14 @@ The `provision_users.ps1` PowerShell script automates the process of provisionin
 
 ## Features
 
-- ✅ **Dual Mode Operation**: Handles both team assignments and direct repository access
-- ✅ **Username-Based**: Works with GitHub usernames (not email addresses) for efficiency
-- ✅ **Team Management**: Automatically creates teams if they don't exist
-- ✅ **Role Mapping**: Converts role names to appropriate GitHub permissions
-- ✅ **Validation**: Comprehensive validation of users, organizations, and repositories
-- ✅ **Dry Run Support**: Test changes before applying them
-- ✅ **Environment File Support**: Load configuration from `.env` files
+- **Dual Mode Operation**: Handles both team assignments and direct repository access
+- **Flexible Input Types**: Supports both GitHub usernames and EMU email addresses
+- **EMU Email Mapping**: Automatically maps EMU emails to usernames via CSV lookup
+- **Team Management**: Automatically creates teams if they don't exist
+- **Role Mapping**: Converts role names to appropriate GitHub permissions
+- **Validation**: Comprehensive validation of users, organizations, and repositories
+- **Dry Run Support**: Test changes before applying them
+- **Environment File Support**: Load configuration from `.env` files
 
 ## Prerequisites
 
@@ -42,9 +43,41 @@ The script expects a CSV file with the following columns:
 | Column | Description | Required |
 |--------|-------------|----------|
 | `Repo` | Repository name | Yes (for direct access) |
-| `User` | GitHub username | Yes |
+| `User` | GitHub username or EMU email (depending on InputType) | Yes |
 | `Role` | User role (Admin, Write, Read, Maintain, Triage) | Yes (for direct access) |
 | `Team` | Team name | Yes (for team assignment) |
+
+### Input Types
+
+The script supports two input types via the `-InputType` parameter:
+
+- **`Username`** (default): The `User` column contains GitHub usernames
+- **`EMUEmail`**: The `User` column contains EMU email addresses that are mapped to usernames
+
+## EMU User Mapping
+
+When using `-InputType EMUEmail`, the script requires a `user_mapping.csv` file in the same directory as your input CSV file.
+
+### user_mapping.csv Format
+
+```csv
+username,useremail
+github_username1,user1@company.onmicrosoft.com
+github_username2,user2@company.onmicrosoft.com
+```
+
+| Column | Description |
+|--------|--------------|
+| `username` | The actual GitHub username |
+| `useremail` | The EMU email address |
+
+### EMU Mapping Process
+
+1. Script reads EMU email from main CSV file
+2. Looks up email in `user_mapping.csv` (case-insensitive)
+3. Retrieves corresponding GitHub username
+4. Uses username for all GitHub API operations
+5. If email not found in mapping file, user is skipped with warning
 
 ### Processing Logic
 
@@ -77,6 +110,16 @@ The script expects a CSV file with the following columns:
 ./provision_users.ps1 -CsvFilePath './users/User_Provisioning.csv' -DryRun
 ```
 
+### EMU Email Input
+
+```powershell
+# Use EMU email addresses (requires user_mapping.csv)
+./provision_users.ps1 -CsvFilePath './users/User_Provisioning.csv' -InputType EMUEmail
+
+# EMU with dry run
+./provision_users.ps1 -CsvFilePath './users/User_Provisioning.csv' -InputType EMUEmail -DryRun
+```
+
 ### Running on macOS
 
 ```bash
@@ -88,7 +131,9 @@ pwsh
 ./provision_users.ps1 -CsvFilePath './users/User_Provisioning.csv'
 ```
 
-## Sample CSV File
+## Sample CSV Files
+
+### Username Input (Default)
 
 ```csv
 Repo,User,Role,Team
@@ -98,10 +143,27 @@ my-repo,admin-user,Admin,
 my-repo,external-dev,Write,
 ```
 
-In this example:
-- `john-doe` and `jane-smith` are added to the `developers` team
-- `admin-user` gets direct admin access to `my-repo`
-- `external-dev` gets direct write access to `my-repo`
+### EMU Email Input
+
+**Main CSV file (User_Provisioning.csv):**
+```csv
+Repo,User,Role,Team
+my-repo,john@company.onmicrosoft.com,Read,developers
+my-repo,jane@company.onmicrosoft.com,Write,developers
+my-repo,admin@company.onmicrosoft.com,Admin,
+```
+
+**User mapping file (user_mapping.csv):**
+```csv
+username,useremail
+john-doe_company,john@company.onmicrosoft.com
+jane-smith_company,jane@company.onmicrosoft.com
+admin-user_company,admin@company.onmicrosoft.com
+```
+
+In both examples:
+- Users are added to the `developers` team or get direct repository access
+- EMU emails are automatically mapped to their corresponding GitHub usernames
 
 ## Script Output
 
@@ -126,6 +188,10 @@ Direct repository access grants: 2
 The script handles various error scenarios:
 
 - **User not found**: Warns if GitHub username doesn't exist
+- **EMU mapping errors**:
+  - Missing `user_mapping.csv` file when using EMUEmail input type
+  - Email not found in mapping file
+  - Mapped username not found on GitHub
 - **Organization membership**: Checks if user is member of organization for team assignments
 - **Repository validation**: Verifies repository exists before granting access
 - **Team creation**: Automatically creates teams that don't exist
@@ -146,6 +212,12 @@ The script handles various error scenarios:
 3. **"Team creation failed"**
    - Check if token has organization admin permissions
    - Verify team name doesn't conflict with existing teams
+
+4. **EMU-related Issues**
+   - **"User mapping file not found"**: Ensure `user_mapping.csv` exists in the same directory as your input CSV
+   - **"Email not found in user_mapping.csv"**: Verify the email exists in the mapping file (check for typos)
+   - **"Mapped username not found on GitHub"**: The username from the mapping file doesn't exist on GitHub
+   - **"Missing required columns"**: Ensure `user_mapping.csv` has both `username` and `useremail` columns
 
 ### PowerShell Execution Policy (Windows)
 
@@ -180,6 +252,7 @@ This script works in conjunction with `map_teams_to_repos.ps1`:
 - **v2.0**: Updated to use GitHub usernames for improved performance
 - **v2.1**: Added dual-mode operation (team + direct repository access)
 - **v2.2**: Enhanced role mapping and permission handling
+- **v2.3**: Added EMU email support with user mapping CSV functionality
 
 ## Support
 
