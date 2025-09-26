@@ -9,6 +9,7 @@ The `provision_users.ps1` PowerShell script automates the process of provisionin
 - **Dual Mode Operation**: Handles both team assignments and direct repository access
 - **Flexible Input Types**: Supports both GitHub usernames and EMU email addresses
 - **EMU Email Mapping**: Automatically maps EMU emails to usernames via CSV lookup
+- **Custom Repository Roles**: Full support for GitHub custom repository roles alongside standard roles
 - **Team Management**: Automatically creates teams if they don't exist
 - **Role Mapping**: Converts role names to appropriate GitHub permissions
 - **Validation**: Comprehensive validation of users, organizations, and repositories
@@ -44,7 +45,7 @@ The script expects a CSV file with the following columns:
 |--------|-------------|----------|
 | `Repo` | Repository name | Yes (for direct access) |
 | `User` | GitHub username or EMU email (depending on InputType) | Yes |
-| `Role` | User role (Admin, Write, Read, Maintain, Triage) | Yes (for direct access) |
+| `Role` | User role (Admin, Write, Read, Maintain, Triage, or custom role name) | Yes (for direct access) |
 | `Team` | Team name | Yes (for team assignment) |
 
 ### Input Types
@@ -86,6 +87,7 @@ github_username2,user2@company.onmicrosoft.com
 
 ### Role to Permission Mapping
 
+#### Standard Roles
 | Role | GitHub Permission | Description |
 |------|-------------------|-------------|
 | `Admin` | `admin` | Full administrative access |
@@ -93,6 +95,22 @@ github_username2,user2@company.onmicrosoft.com
 | `Read` | `pull` | Read-only access |
 | `Maintain` | `maintain` | Maintain access (triage + some admin) |
 | `Triage` | `triage` | Triage access (manage issues/PRs) |
+
+#### Custom Repository Roles
+The script automatically detects and supports GitHub custom repository roles defined in your organization. Custom roles are used as-is without conversion.
+
+**Examples of custom roles:**
+- `Security Reviewer`
+- `Deploy Manager`
+- `Code Scanner`
+- `Release Coordinator`
+
+**Custom Role Processing:**
+1. Script loads all custom repository roles from your organization at startup
+2. When processing a role, it first checks if it matches a custom role name
+3. If found, uses the custom role directly via GitHub's `role_name` API parameter
+4. If not found, falls back to standard role mapping
+5. Unknown roles default to `pull` permission with a warning
 
 ## Usage Examples
 
@@ -153,6 +171,18 @@ my-repo,jane@company.onmicrosoft.com,Write,developers
 my-repo,admin@company.onmicrosoft.com,Admin,
 ```
 
+### Custom Repository Roles
+
+**With standard and custom roles mixed:**
+```csv
+Repo,User,Role,Team
+my-repo,security-lead,Security Reviewer,security-team
+my-repo,deploy-manager,Deploy Manager,
+my-repo,code-scanner,Code Scanner,security-team
+my-repo,regular-dev,Write,developers
+my-repo,admin-user,Admin,
+```
+
 **User mapping file (user_mapping.csv):**
 ```csv
 username,useremail
@@ -167,11 +197,19 @@ In both examples:
 
 ## Script Output
 
-The script provides detailed output including:
+The script provides detailed output including custom role detection:
 
 ```
+Validating GitHub organization 'my-org'...
+Organization 'my-org' found.
+Loading custom repository roles for organization 'my-org'...
+Found 3 custom repository role(s): Security Reviewer, Deploy Manager, Code Scanner
+
 Processing user: john-doe -> Team: developers
 Successfully added user 'john-doe' to team 'developers'
+
+Processing user: security-lead -> Repository: my-repo (Role: Security Reviewer -> Permission: Security Reviewer)
+Successfully granted user 'security-lead' 'Security Reviewer' access to repository 'my-repo'
 
 Processing user: admin-user -> Repository: my-repo (Role: Admin -> Permission: admin)
 Successfully granted user 'admin-user' 'admin' access to repository 'my-repo'
@@ -180,7 +218,7 @@ Successfully granted user 'admin-user' 'admin' access to repository 'my-repo'
 Users successfully processed: 4
 Failed user operations: 0
 Teams processed: 1
-Direct repository access grants: 2
+Direct repository access grants: 3
 ```
 
 ## Error Handling
@@ -253,6 +291,7 @@ This script works in conjunction with `map_teams_to_repos.ps1`:
 - **v2.1**: Added dual-mode operation (team + direct repository access)
 - **v2.2**: Enhanced role mapping and permission handling
 - **v2.3**: Added EMU email support with user mapping CSV functionality
+- **v2.4**: Added support for GitHub custom repository roles
 
 ## Support
 

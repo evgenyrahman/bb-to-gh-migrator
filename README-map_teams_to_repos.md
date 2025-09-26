@@ -6,13 +6,14 @@ The `map_teams_to_repos.ps1` PowerShell script automates the process of granting
 
 ## Features
 
-- ✅ **Role-Based Permissions**: Analyzes CSV roles to determine appropriate team permissions
-- ✅ **Permission Hierarchy**: Grants highest permission level among team members
-- ✅ **Team Validation**: Verifies teams exist before granting repository access
-- ✅ **Repository Validation**: Confirms repositories exist in the organization
-- ✅ **Duplicate Prevention**: Processes unique repository-team pairs only
-- ✅ **Dry Run Support**: Preview changes before applying them
-- ✅ **Environment File Support**: Load configuration from `.env` files
+- **Role-Based Permissions**: Analyzes CSV roles to determine appropriate team permissions
+- **Custom Repository Roles**: Full support for GitHub custom repository roles alongside standard roles
+- **Permission Hierarchy**: Grants highest permission level among team members
+- **Team Validation**: Verifies teams exist before granting repository access
+- **Repository Validation**: Confirms repositories exist in the organization
+- **Duplicate Prevention**: Processes unique repository-team pairs only
+- **Dry Run Support**: Preview changes before applying them
+- **Environment File Support**: Load configuration from `.env` files
 
 ## Prerequisites
 
@@ -42,7 +43,7 @@ The script reads the same CSV format as `provision_users.ps1`:
 |--------|-------------|-------|
 | `Repo` | Repository name | Used to identify target repository |
 | `User` | GitHub username | Used to group by team |
-| `Role` | User role (Admin, Write, Read, etc.) | Analyzed to determine team permissions |
+| `Role` | User role (Admin, Write, Read, or custom role name) | Analyzed to determine team permissions |
 | `Team` | Team name | Target team for repository access |
 
 ### Processing Logic
@@ -54,7 +55,8 @@ The script reads the same CSV format as `provision_users.ps1`:
 
 ## Permission Hierarchy
 
-The script uses the following permission hierarchy (highest to lowest):
+### Standard Roles Hierarchy
+The script uses the following permission hierarchy for standard roles (highest to lowest):
 
 | Priority | Role | GitHub Permission | Description |
 |----------|------|-------------------|-------------|
@@ -63,6 +65,19 @@ The script uses the following permission hierarchy (highest to lowest):
 | 3 | `Write` | `push` | Read and write access |
 | 4 | `Triage` | `triage` | Triage access (manage issues/PRs) |
 | 5 (Lowest) | `Read` | `pull` | Read-only access |
+
+### Custom Repository Roles
+
+**Custom Role Handling:**
+- Custom roles are automatically detected from your GitHub organization
+- When team members have custom roles, those take priority over standard roles
+- If multiple custom roles exist for a team, the first one found is used
+- Custom roles are applied using GitHub's `role_name` API parameter
+
+**Mixed Role Scenarios:**
+- **Team with only custom roles**: Uses the first custom role found
+- **Team with only standard roles**: Uses standard hierarchy (Admin > Maintain > Write > Triage > Read)
+- **Team with mixed roles**: Custom roles take priority; standard roles are used as fallback
 
 ### Example Scenarios
 
@@ -77,7 +92,7 @@ my-app,dev2,Write,frontend-team
 **Scenario 2**: Team has admin member
 ```csv
 Repo,User,Role,Team
-my-api,lead1,Admin,backend-team  
+my-api,lead1,Admin,backend-team
 my-api,dev3,Write,backend-team
 ```
 **Result**: `backend-team` gets `admin` permission (highest among Admin/Write)
@@ -111,7 +126,7 @@ pwsh
 
 ## Sample CSV and Expected Results
 
-### Input CSV
+### Standard Roles Input CSV
 ```csv
 Repo,User,Role,Team
 hello-world,alice,Read,good-team
@@ -121,26 +136,56 @@ hello-world,dave,Write,nice-team
 hello-world,admin,Admin,
 ```
 
-### Expected Processing
+**Expected Processing:**
 - `good-team`: Gets `pull` permission (all members have Read roles)
-- `nice-team`: Gets `push` permission (all members have Write roles)  
+- `nice-team`: Gets `push` permission (all members have Write roles)
 - `admin` user: Ignored (no team specified, handled by `provision_users.ps1`)
+
+### Custom Roles Input CSV
+```csv
+Repo,User,Role,Team
+my-api,security-lead,Security Reviewer,security-team
+my-api,scanner,Code Scanner,security-team
+my-api,deployer,Deploy Manager,deploy-team
+my-api,dev1,Write,deploy-team
+my-api,admin,Admin,
+```
+
+**Expected Processing:**
+- `security-team`: Gets `Security Reviewer` permission (custom role takes priority)
+- `deploy-team`: Gets `Deploy Manager` permission (custom role over standard Write)
+- `admin` user: Ignored (no team specified)
+
+### Mixed Roles Input CSV
+```csv
+Repo,User,Role,Team
+my-app,lead,Admin,mixed-team
+my-app,security,Security Reviewer,mixed-team
+my-app,dev,Write,mixed-team
+```
+
+**Expected Processing:**
+- `mixed-team`: Gets `Security Reviewer` permission (custom role prioritized over Admin/Write)
 
 ## Script Output
 
-The script provides detailed output showing role analysis:
+The script provides detailed output showing role analysis and custom role detection:
 
 ```
+Validating GitHub organization 'my-org'...
+Organization 'my-org' found.
 Found 6 entries in CSV file.
-Found 2 unique repository-team mappings to process.
+Found 3 unique repository-team mappings to process.
+Loading custom repository roles for organization 'my-org'...
+Found 2 custom repository role(s): Security Reviewer, Deploy Manager
 
-Processing: Repository 'hello-world' -> Team 'good-team' (slug: good-team) with 'pull' permission (Roles: Read, Read)
-Granting team 'good-team' 'pull' access to repository 'hello-world'...
-Successfully granted team 'good-team' 'pull' access to repository 'hello-world'
+Processing: Repository 'my-api' -> Team 'security-team' (slug: security-team) with 'Security Reviewer' permission (Roles: Security Reviewer, Code Scanner)
+Granting team 'security-team' 'Security Reviewer' access to repository 'my-api'...
+Successfully granted team 'security-team' 'Security Reviewer' access to repository 'my-api'
 
-Processing: Repository 'hello-world' -> Team 'nice-team' (slug: nice-team) with 'push' permission (Roles: Write, Write)
-Granting team 'nice-team' 'push' access to repository 'hello-world'...
-Successfully granted team 'nice-team' 'push' access to repository 'hello-world'
+Processing: Repository 'my-api' -> Team 'deploy-team' (slug: deploy-team) with 'Deploy Manager' permission (Roles: Deploy Manager, Write)
+Granting team 'deploy-team' 'Deploy Manager' access to repository 'my-api'...
+Successfully granted team 'deploy-team' 'Deploy Manager' access to repository 'my-api'
 
 --- Team-to-Repository Mapping Summary ---
 Successful repository access grants: 2
@@ -243,6 +288,7 @@ $data | Where-Object { $_.Team } | Group-Object Team, Role | Format-Table Count,
 - **v2.0**: Added role-based permission calculation
 - **v2.1**: Enhanced role analysis and permission hierarchy
 - **v2.2**: Improved error handling and team validation
+- **v2.3**: Added support for GitHub custom repository roles
 
 ## Support
 

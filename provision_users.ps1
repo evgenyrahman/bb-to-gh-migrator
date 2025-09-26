@@ -242,10 +242,40 @@ function Convert-TeamNameToSlug {
     return $TeamName.ToLower() -replace '[.\s]+', '-'
 }
 
-function Convert-RoleToPermission {
-    param([string]$Role)
+function Get-CustomRepositoryRoles {
+    param([string]$OrgName)
 
-    # Convert role names to GitHub repository permission levels
+    $headers = Get-GitHubHeaders
+    $url = "$GITHUB_API_URL/orgs/$OrgName/custom-repository-roles"
+
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        return $response.custom_roles
+    }
+    catch {
+        if ($_.Exception.Response.StatusCode -eq 404) {
+            Write-Verbose "Custom repository roles not available or not found for organization '$OrgName'"
+            return @()
+        }
+        Write-Warning "Error retrieving custom repository roles: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Convert-RoleToPermission {
+    param(
+        [string]$Role,
+        [array]$CustomRoles = @()
+    )
+
+    # First check if it's a custom role
+    $customRole = $CustomRoles | Where-Object { $_.name -ieq $Role }
+    if ($customRole) {
+        Write-Verbose "Using custom repository role: '$($customRole.name)' (ID: $($customRole.id))"
+        return $customRole.name  # Return the custom role name as-is
+    }
+
+    # Convert standard role names to GitHub repository permission levels
     switch ($Role.ToLower()) {
         "admin" { return "admin" }
         "write" { return "push" }
@@ -377,15 +407,28 @@ function Grant-UserRepositoryAccess {
         [string]$OrgName,
         [string]$RepoName,
         [string]$Username,
-        [string]$Permission
+        [string]$Permission,
+        [array]$CustomRoles = @()
     )
 
     $headers = Get-GitHubHeaders
     $url = "$GITHUB_API_URL/repos/$OrgName/$RepoName/collaborators/$Username"
 
-    $body = @{
-        permission = $Permission
-    } | ConvertTo-Json
+    # Check if this is a custom role
+    $customRole = $CustomRoles | Where-Object { $_.name -ieq $Permission }
+    if ($customRole) {
+        # For custom roles, we need to use the role_name parameter instead of permission
+        $body = @{
+            role_name = $customRole.name
+        } | ConvertTo-Json
+        Write-Verbose "Using custom role '$($customRole.name)' for user '$Username'"
+    }
+    else {
+        # For standard roles, use the permission parameter
+        $body = @{
+            permission = $Permission
+        } | ConvertTo-Json
+    }
 
     try {
         Invoke-RestMethod -Uri $url -Method Put -Headers $headers -Body $body -ContentType "application/json" | Out-Null
@@ -431,6 +474,16 @@ if ($InputType -eq 'EMUEmail') {
         Write-Error $_.Exception.Message
         exit 1
     }
+}
+
+# Load custom repository roles
+Write-Host "Loading custom repository roles for organization '$GITHUB_ORG'..."
+$customRoles = Get-CustomRepositoryRoles -OrgName $GITHUB_ORG
+if ($customRoles.Count -gt 0) {
+    Write-Host "Found $($customRoles.Count) custom repository role(s): $($customRoles.name -join ', ')" -ForegroundColor Blue
+}
+else {
+    Write-Host "No custom repository roles found. Using standard roles only." -ForegroundColor Gray
 }
 
 # Read and process CSV file
@@ -532,7 +585,7 @@ foreach ($entry in $csvData) {
     }
     elseif ($hasRole -and $hasRepo) {
         # Direct repository access scenario
-        $permission = Convert-RoleToPermission -Role $roleName
+        $permission = Convert-RoleToPermission -Role $roleName -CustomRoles $customRoles
         Write-Host "`nProcessing user: $username -> Repository: $repoName (Role: $roleName -> Permission: $permission)"
 
         if ($DryRun) {
@@ -549,7 +602,7 @@ foreach ($entry in $csvData) {
 
         # Grant user direct access to repository
         Write-Host "Granting user '$username' '$permission' access to repository '$repoName'..."
-        if (Grant-UserRepositoryAccess -OrgName $GITHUB_ORG -RepoName $repoName -Username $username -Permission $permission) {
+        if (Grant-UserRepositoryAccess -OrgName $GITHUB_ORG -RepoName $repoName -Username $username -Permission $permission -CustomRoles $customRoles) {
             Write-Host "Successfully granted user '$username' '$permission' access to repository '$repoName'" -ForegroundColor Green
             $successCount++
             $directAccessCount++

@@ -135,15 +135,28 @@ function Grant-TeamRepositoryAccess {
         [string]$OrgName,
         [string]$TeamSlug,
         [string]$RepoName,
-        [string]$Permission
+        [string]$Permission,
+        [array]$CustomRoles = @()
     )
 
     $headers = Get-GitHubHeaders
     $url = "$GITHUB_API_URL/orgs/$OrgName/teams/$TeamSlug/repos/$OrgName/$RepoName"
 
-    $body = @{
-        permission = $Permission
-    } | ConvertTo-Json
+    # Check if this is a custom role
+    $customRole = $CustomRoles | Where-Object { $_.name -ieq $Permission }
+    if ($customRole) {
+        # For custom roles, we need to use the role_name parameter instead of permission
+        $body = @{
+            role_name = $customRole.name
+        } | ConvertTo-Json
+        Write-Verbose "Using custom role '$($customRole.name)' for team '$TeamSlug'"
+    }
+    else {
+        # For standard roles, use the permission parameter
+        $body = @{
+            permission = $Permission
+        } | ConvertTo-Json
+    }
 
     try {
         Invoke-RestMethod -Uri $url -Method Put -Headers $headers -Body $body -ContentType "application/json" | Out-Null
@@ -162,10 +175,40 @@ function Convert-TeamNameToSlug {
     return $TeamName.ToLower() -replace '[.\s]+', '-'
 }
 
-function Convert-RoleToPermission {
-    param([string]$Role)
+function Get-CustomRepositoryRoles {
+    param([string]$OrgName)
 
-    # Convert role names to GitHub repository permission levels
+    $headers = Get-GitHubHeaders
+    $url = "$GITHUB_API_URL/orgs/$OrgName/custom-repository-roles"
+
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        return $response.custom_roles
+    }
+    catch {
+        if ($_.Exception.Response.StatusCode -eq 404) {
+            Write-Verbose "Custom repository roles not available or not found for organization '$OrgName'"
+            return @()
+        }
+        Write-Warning "Error retrieving custom repository roles: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Convert-RoleToPermission {
+    param(
+        [string]$Role,
+        [array]$CustomRoles = @()
+    )
+
+    # First check if it's a custom role
+    $customRole = $CustomRoles | Where-Object { $_.name -ieq $Role }
+    if ($customRole) {
+        Write-Verbose "Using custom repository role: '$($customRole.name)' (ID: $($customRole.id))"
+        return $customRole.name  # Return the custom role name as-is
+    }
+
+    # Convert standard role names to GitHub repository permission levels
     switch ($Role.ToLower()) {
         "admin" { return "admin" }
         "write" { return "push" }
@@ -180,16 +223,40 @@ function Convert-RoleToPermission {
 }
 
 function Get-TeamPermissionLevel {
-    param([array]$Roles)
+    param(
+        [array]$Roles,
+        [array]$CustomRoles = @()
+    )
 
-    # Determine the highest permission level needed for the team based on member roles
+    # Convert roles to permissions
+    $permissions = $Roles | ForEach-Object { Convert-RoleToPermission -Role $_ -CustomRoles $CustomRoles }
+
+    # If any custom roles are present, we need special handling
+    $customPermissions = @()
+    $standardPermissions = @()
+
+    foreach ($permission in $permissions) {
+        $isCustom = $CustomRoles | Where-Object { $_.name -ieq $permission }
+        if ($isCustom) {
+            $customPermissions += $permission
+        } else {
+            $standardPermissions += $permission
+        }
+    }
+
+    # If we have custom roles, prioritize them (you may want to adjust this logic based on your needs)
+    if ($customPermissions.Count -gt 0) {
+        # For now, return the first custom role found (you might want more sophisticated logic)
+        Write-Verbose "Team has custom role(s): $($customPermissions -join ', '). Using: $($customPermissions[0])"
+        return $customPermissions[0]
+    }
+
+    # Handle standard permissions with hierarchy
     # Priority: admin > maintain > push > triage > pull
-    $permissions = $Roles | ForEach-Object { Convert-RoleToPermission -Role $_ }
-
-    if ($permissions -contains "admin") { return "admin" }
-    if ($permissions -contains "maintain") { return "maintain" }
-    if ($permissions -contains "push") { return "push" }
-    if ($permissions -contains "triage") { return "triage" }
+    if ($standardPermissions -contains "admin") { return "admin" }
+    if ($standardPermissions -contains "maintain") { return "maintain" }
+    if ($standardPermissions -contains "push") { return "push" }
+    if ($standardPermissions -contains "triage") { return "triage" }
     return "pull"
 }
 
@@ -257,6 +324,16 @@ foreach ($entry in $csvData) {
 
 Write-Host "Found $($repoTeamMappings.Count) unique repository-team mappings to process."
 
+# Load custom repository roles
+Write-Host "Loading custom repository roles for organization '$GITHUB_ORG'..."
+$customRoles = Get-CustomRepositoryRoles -OrgName $GITHUB_ORG
+if ($customRoles.Count -gt 0) {
+    Write-Host "Found $($customRoles.Count) custom repository role(s): $($customRoles.name -join ', ')" -ForegroundColor Blue
+}
+else {
+    Write-Host "No custom repository roles found. Using standard roles only." -ForegroundColor Gray
+}
+
 # Track results
 $successCount = 0
 $failureCount = 0
@@ -269,7 +346,7 @@ foreach ($mapping in $repoTeamMappings.Values) {
 
     # Determine permission level based on team member roles
     $teamPermission = if ($mapping.Roles.Count -gt 0) {
-        Get-TeamPermissionLevel -Roles $mapping.Roles
+        Get-TeamPermissionLevel -Roles $mapping.Roles -CustomRoles $customRoles
     } else {
         "pull"  # Default to read access if no roles specified
     }
@@ -299,7 +376,7 @@ foreach ($mapping in $repoTeamMappings.Values) {
 
     # Grant team access to repository
     Write-Host "Granting team '$teamName' '$teamPermission' access to repository '$repoName'..."
-    if (Grant-TeamRepositoryAccess -OrgName $GITHUB_ORG -TeamSlug $teamSlug -RepoName $repoName -Permission $teamPermission) {
+    if (Grant-TeamRepositoryAccess -OrgName $GITHUB_ORG -TeamSlug $teamSlug -RepoName $repoName -Permission $teamPermission -CustomRoles $customRoles) {
         Write-Host "Successfully granted team '$teamName' '$teamPermission' access to repository '$repoName'" -ForegroundColor Green
         $successCount++
     }
